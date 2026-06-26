@@ -12,7 +12,7 @@ def is_redis_installed():
             ["redis-cli", "--version"],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=7,
             check=False,
         )
         return result.returncode == 0
