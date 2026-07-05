@@ -146,7 +146,7 @@ fc = FrameCache.from_config(config)
 ```
 
 `FrameCache` accepts a `CacheBackend` instance only (typically from
-`BackendFactory.create()`). A raw `redis.Redis` client is not supported.
+`BackendFactory.create()`). 
 
 ## Quick start
 

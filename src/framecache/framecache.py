@@ -148,14 +148,14 @@ class FrameCache:
         arrow_table = reader.read_all()
         return pl.from_arrow(arrow_table)
 
-    def refresh(self, extension_to_leading_key="*"):
+    def refresh(self, user_suffix="*"):
         stored = dict(self.cache_container.hgetall(self._formats_key))
 
         formats: dict[str, str] = {}
         live_keys: set[str] = set()
 
         for k in self.cache_container.scan(
-            f"{self.framecache_key}-{extension_to_leading_key}"
+            f"{self.framecache_key}-{user_suffix}"
         ):
             live_keys.add(k)
             if k in stored:
