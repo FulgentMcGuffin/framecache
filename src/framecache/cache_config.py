@@ -27,6 +27,15 @@ SQLite backend::
     default_ttl_hours: 24.0      # null or omit for no expiry
 
     db_path: ./cache/framecache.db   # ":memory:" for an in-memory db
+
+DuckDB backend::
+
+    backend_type: duckdb
+    framecache_key: MyCache
+    use_hash_keys: false
+    default_ttl_hours: 24.0
+
+    db_path: ./cache/framecache.duckdb
 """
 
 from __future__ import annotations
@@ -46,7 +55,7 @@ class CacheConfig:
     """Unified configuration for a FrameCache storage backend.
 
     Attributes:
-        backend_type:       ``"redis"`` or ``"sqlite"``.
+        backend_type:       ``"redis"``, ``"sqlite"``, or ``"duckdb"``.
         framecache_key:     Prefix/namespace used for all cache keys.
         use_hash_keys:      Whether to SHA-256 hash the argument portion of
                             cache_instance_ids (keeps Redis key length bounded).
@@ -57,8 +66,8 @@ class CacheConfig:
     Redis-specific:
         host, port, db, password
 
-    SQLite-specific:
-        db_path:  Path to the ``.db`` file, or ``":memory:"``.
+    SQLite / DuckDB-specific:
+        db_path:  Path to the database file, or ``":memory:"``.
     """
 
     backend_type: str = "redis"
@@ -91,7 +100,7 @@ class CacheConfig:
 
         Raises:
             FileNotFoundError: if ``path`` does not exist.
-            ValueError: if ``backend_type`` is not ``"redis"`` or ``"sqlite"``.
+            ValueError: if ``backend_type`` is not ``"redis"``, ``"sqlite"``, or ``"duckdb"``.
         """
         try:
             import yaml
@@ -121,9 +130,9 @@ class CacheConfig:
         filtered = {k: v for k, v in data.items() if k in known}
 
         backend_type = str(filtered.get("backend_type", "redis")).lower()
-        if backend_type not in ("redis", "sqlite"):
+        if backend_type not in ("redis", "sqlite", "duckdb"):
             raise ValueError(
-                f"backend_type must be 'redis' or 'sqlite', got {backend_type!r}"
+                f"backend_type must be 'redis', 'sqlite', or 'duckdb', got {backend_type!r}"
             )
         filtered["backend_type"] = backend_type
 
@@ -147,26 +156,12 @@ class CacheConfig:
     def build_backend(self):
         """Construct and return the appropriate :class:`CacheBackend`.
 
-        Returns:
-            A :class:`~framecache.backends.RedisBackend` or
-            :class:`~framecache.backends.SQLiteBackend` instance.
+        Delegates to :class:`~framecache.backend_factory.BackendFactory`.
+        Prefer :meth:`BackendFactory.create` for new code.
         """
-        from framecache.backends import RedisBackend, SQLiteBackend  # noqa: E402
+        from framecache.backend_factory import BackendFactory
 
-        if self.backend_type == "redis":
-            import redis
-            client = redis.Redis(
-                host=self.host,
-                port=self.port,
-                db=self.db,
-                password=self.password,
-            )
-            return RedisBackend(client)
-
-        if self.backend_type == "sqlite":
-            return SQLiteBackend(self.db_path)
-
-        raise ValueError(f"Unknown backend_type: {self.backend_type!r}")
+        return BackendFactory.create(self)
 
     # ------------------------------------------------------------------
     # Serialization helpers

@@ -1,8 +1,8 @@
 # framecache
 
 Memoization for functions that return a `polars.DataFrame`[^1], `polars.Series`,
-`numpy.ndarray`, `numpy.matrix`, or `numpy.recarray`, backed by **Redis** or
-**SQLite**. Results are serialized and stored keyed by the function name, its
+`numpy.ndarray`, `numpy.matrix`, or `numpy.recarray`, backed by **Redis**,
+**SQLite**, or **DuckDB**. Results are serialized and stored keyed by the function name, its
 arguments, and the serialization method, then reused on subsequent identical
 calls. On top of plain memoization, framecache can retain a rolling history of
 the last *N* calls and let you retrieve historical values.
@@ -34,8 +34,8 @@ After installing `uv`, verify it’s available:
 uv --version
 ```
 
-Retrieve the repository by: 
-`
+Retrieve the repository:
+
 ```bash
 git clone https://github.com/FulgentMcGuffin/FrameCache.git
 ```
@@ -60,17 +60,20 @@ pip install -e .
 After installation, import it directly in any Python environment:
 
 ```python
-from framecache import FrameCache, CacheConfig, SQLiteBackend
+from framecache import FrameCache, CacheConfig, BackendFactory
 ```
 
 ## Backends & Configuration
 
-framecache ships two storage backends that share the same interface:
+framecache ships three storage backends behind a common interface. Clients
+should use `BackendFactory` (or `FrameCache.from_config` /
+`FrameCache.from_yaml`) and never need to import concrete backend classes.
 
-| Backend        | When to use                                         |
+| `backend_type` | When to use                                         |
 | -------------- | --------------------------------------------------- |
-| `RedisBackend` | Shared / distributed cache; TTL managed by Redis    |
-| `SQLiteBackend`| Local / file-based cache; TTL enforced via a column |
+| `redis`        | Shared / distributed cache; TTL managed by Redis    |
+| `sqlite`       | Local / file-based cache; TTL enforced via a column |
+| `duckdb`       | Local / file-based cache; same layout as SQLite     |
 
 ### YAML configuration (recommended)
 
@@ -99,29 +102,51 @@ default_ttl_hours: 24.0    # null / omit for no expiry
 db_path: ./cache/framecache.db    # ":memory:" for tests/in-memory
 ```
 
+```yaml
+# cache_duckdb.yaml
+backend_type: duckdb
+framecache_key: MyCache
+use_hash_keys: false
+default_ttl_hours: 24.0
+
+db_path: ./cache/framecache.duckdb
+```
+
 ```python
 from framecache import FrameCache
 
 fc = FrameCache.from_yaml("cache_sqlite.yaml")
 ```
 
+### BackendFactory (recommended)
+
+Use `BackendFactory` to obtain a backend without importing implementation
+classes:
+
+```python
+from framecache import BackendFactory, CacheConfig, FrameCache
+
+config = CacheConfig.from_yaml("cache.yaml")
+backend = BackendFactory.create(config)
+fc = FrameCache(backend)
+
+# Or in one step:
+fc = BackendFactory.create_framecache(config)
+# equivalent to:
+fc = FrameCache.from_config(config)
+```
+
 ### Programmatic construction
 
 ```python
-from framecache import FrameCache, CacheConfig, RedisBackend, SQLiteBackend
-import redis
+from framecache import FrameCache, CacheConfig
 
-# From a config object
-config = CacheConfig(backend_type="sqlite", db_path="./my.db", default_ttl_hours=12.0)
+config = CacheConfig(backend_type="duckdb", db_path="./my.duckdb", default_ttl_hours=12.0)
 fc = FrameCache.from_config(config)
-
-# Directly with a backend instance
-fc = FrameCache(SQLiteBackend("./my.db"))
-fc = FrameCache(RedisBackend(redis.Redis(host="localhost", port=6379)))
-
-# Backward-compatible: pass a redis.Redis directly (auto-wrapped)
-fc = FrameCache(redis.Redis(host="localhost", port=6379, db=0))
 ```
+
+`FrameCache` accepts a `CacheBackend` instance only (typically from
+`BackendFactory.create()`). A raw `redis.Redis` client is not supported.
 
 ## Quick start
 
@@ -247,15 +272,16 @@ for cid in fc.list_cache_instance_ids(func=load_sales, regex=r"region-EU"):
 - `regex` — a Python regex applied after the scan, useful when not all
   arguments are known or several func/arg combinations are wanted.
 
-## SQLite extras
+## SQL file backend extras
 
-`SQLiteBackend` exposes `metadata_df()` which returns a `polars.DataFrame`
-with all live (non-expired) cache entries and their timestamps:
+SQLite and DuckDB backends expose `metadata_df()` on the backend instance
+returned by `BackendFactory.create()` — useful for inspection and debugging:
 
 ```python
-from framecache import SQLiteBackend, FrameCache
+from framecache import BackendFactory, CacheConfig, FrameCache
 
-backend = SQLiteBackend("./my_cache.db")
+config = CacheConfig(backend_type="sqlite", db_path="./my_cache.db")
+backend = BackendFactory.create(config)
 fc = FrameCache(backend)
 
 # ... run some cached functions ...
@@ -275,9 +301,9 @@ deserialize them correctly.
 
 ## Testing
 
-Tests run without a live Redis server or SQLite file; both backends use
-in-memory instances (`fakeredis.FakeRedis` and `SQLiteBackend(":memory:")`).
-Every functional test is parametrized and runs against **both** backends:
+Tests run without a live Redis server or on-disk database files; all three
+backends use in-memory instances during the test suite. Every functional test
+is parametrized and runs against **redis**, **sqlite**, and **duckdb**:
 
 ```bash
 uv run pytest

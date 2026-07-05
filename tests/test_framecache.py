@@ -4,7 +4,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from framecache import FrameCache, SQLiteBackend, CacheConfig
+from framecache import FrameCache, CacheConfig, BackendFactory
+from framecache.backends import RedisBackend, SQLiteBackend, DuckDBBackend
 
 
 def make_counter_fn(values=None):
@@ -434,6 +435,94 @@ def test_sqlite_metadata_df():
 
 
 # --------------------------------------------------------------------------- #
+# DuckDBBackend specifics
+# --------------------------------------------------------------------------- #
+
+def test_duckdb_ttl_expiry():
+    backend = DuckDBBackend(":memory:")
+    backend.set("k1", b"hello", ttl=__import__("datetime").timedelta(milliseconds=50))
+    assert backend.exists("k1")
+    time.sleep(0.1)
+    assert not backend.exists("k1")
+    assert backend.get("k1") is None
+    backend.close()
+
+
+def test_duckdb_scan_glob():
+    backend = DuckDBBackend(":memory:")
+    backend.set("ns-foo-bar", b"1")
+    backend.set("ns-foo-baz", b"2")
+    backend.set("other-key", b"3")
+    results = sorted(backend.scan("ns-foo-*"))
+    assert results == ["ns-foo-bar", "ns-foo-baz"]
+    backend.close()
+
+
+def test_duckdb_hash_operations():
+    backend = DuckDBBackend(":memory:")
+    backend.hset("myhash", "field1", "val1")
+    backend.hset("myhash", "field2", "val2")
+    assert backend.hgetall("myhash") == {"field1": "val1", "field2": "val2"}
+    backend.hdel("myhash", "field1")
+    assert backend.hgetall("myhash") == {"field2": "val2"}
+    backend.close()
+
+
+def test_duckdb_metadata_df():
+    backend = DuckDBBackend(":memory:")
+    fc = FrameCache(backend)
+
+    @fc.cache(method="pyarrow")
+    def fn(x):
+        return pl.DataFrame({"x": [x]})
+
+    fn(1)
+    fn(2)
+    df = backend.metadata_df()
+    assert len(df) == 2
+    assert "cache_id" in df.columns
+    backend.close()
+
+
+# --------------------------------------------------------------------------- #
+# BackendFactory
+# --------------------------------------------------------------------------- #
+
+def test_backend_factory_supported_backends():
+    assert BackendFactory.supported_backends() == frozenset({"redis", "sqlite", "duckdb"})
+
+
+def test_backend_factory_create_sqlite():
+    cfg = CacheConfig(backend_type="sqlite", db_path=":memory:")
+    backend = BackendFactory.create(cfg)
+    assert isinstance(backend, SQLiteBackend)
+    backend.close()
+
+
+def test_backend_factory_create_duckdb():
+    cfg = CacheConfig(backend_type="duckdb", db_path=":memory:")
+    backend = BackendFactory.create(cfg)
+    assert isinstance(backend, DuckDBBackend)
+    backend.close()
+
+
+def test_backend_factory_create_framecache(tmp_path):
+    cfg = CacheConfig(backend_type="duckdb", db_path=str(tmp_path / "fc.duckdb"))
+    fc = BackendFactory.create_framecache(cfg)
+
+    @fc.cache(method="pyarrow")
+    def fn():
+        return pl.DataFrame({"v": [1]})
+
+    assert fn()["v"].item() == 1
+
+
+def test_framecache_rejects_raw_redis_client(redis_client):
+    with pytest.raises(TypeError, match="CacheBackend"):
+        FrameCache(redis_client)
+
+
+# --------------------------------------------------------------------------- #
 # CacheConfig and YAML round-trip
 # --------------------------------------------------------------------------- #
 
@@ -448,6 +537,12 @@ def test_cache_config_from_dict_sqlite():
     cfg = CacheConfig.from_dict({"backend_type": "sqlite", "db_path": "./test.db", "default_ttl_hours": 48.0})
     assert cfg.backend_type == "sqlite"
     assert cfg.default_ttl_hours == 48.0
+
+
+def test_cache_config_from_dict_duckdb():
+    cfg = CacheConfig.from_dict({"backend_type": "duckdb", "db_path": "./test.duckdb"})
+    assert cfg.backend_type == "duckdb"
+    assert cfg.db_path.endswith("test.duckdb")
 
 
 def test_cache_config_invalid_backend():

@@ -11,7 +11,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Literal, Callable, Tuple
 
-from framecache.backends import CacheBackend, RedisBackend  # noqa: E402
+from framecache.backends import CacheBackend  # noqa: E402
 
 # Inspired by: https://github.com/emmc15/Randas_Cache
 
@@ -41,7 +41,7 @@ class FrameCache:
 
     def __init__(
         self,
-        backend: "CacheBackend | redis.client.Redis",
+        backend: CacheBackend,
         framecache_key: str = None,
         use_hash_keys: bool = False,
         default_ttl: timedelta = None,
@@ -49,37 +49,37 @@ class FrameCache:
         """Construct a FrameCache.
 
         Args:
-            backend:        A :class:`~framecache.backends.CacheBackend`
-                            instance, *or* a ``redis.Redis`` client for
-                            backward compatibility (auto-wrapped in a
-                            :class:`~framecache.backends.RedisBackend`).
-            framecache_key: Namespace prefix for all Redis/SQLite keys.
+            backend:        A :class:`~framecache.backends.CacheBackend` instance.
+                            Use :class:`~framecache.backend_factory.BackendFactory`
+                            or :meth:`from_config` / :meth:`from_yaml` to obtain one.
+            framecache_key: Namespace prefix for all cache keys.
                             Defaults to the class name ``"FrameCache"``.
             use_hash_keys:  When ``True``, SHA-256-hash the argument portion
                             of every cache_instance_id to keep key lengths
                             bounded.
             default_ttl:    Lifetime of cached entries.  Overrides
                             :attr:`DEFAULT_KEY_TTL`.  ``None`` uses the class
-                            default (1 hour for Redis; unlimited for SQLite
-                            unless specified in the config).
+                            default (1 hour unless overridden in config).
 
         Prefer :meth:`from_config` / :meth:`from_yaml` for new code.
         """
-        # Backward compat: always wrap a bare redis.Redis before Protocol check,
-        # because redis.Redis coincidentally has method names (scan, get, set, …)
-        # that satisfy the @runtime_checkable Protocol, but with incompatible
-        # signatures (e.g. Redis.scan takes cursor/count, not a glob pattern).
+        # redis.Redis satisfies @runtime_checkable CacheBackend by method name but
+        # is not compatible (e.g. scan() signature differs). Reject it explicitly.
         try:
             import redis as _redis
+
             if isinstance(backend, _redis.client.Redis):
-                backend = RedisBackend(backend)
+                raise TypeError(
+                    "Expected a CacheBackend instance, got redis.Redis. "
+                    "Use BackendFactory.create(config) or FrameCache.from_config(config)."
+                )
         except ImportError:
             pass
 
         if not isinstance(backend, CacheBackend):
-            raise AttributeError(
-                f"Expected a CacheBackend (RedisBackend / SQLiteBackend) or a "
-                f"redis.Redis instance, got {type(backend).__name__}"
+            raise TypeError(
+                f"Expected a CacheBackend instance, got {type(backend).__name__}. "
+                f"Use BackendFactory.create(config) or FrameCache.from_config(config)."
             )
 
         self.cache_container: CacheBackend = backend
@@ -111,7 +111,9 @@ class FrameCache:
             config = CacheConfig.from_yaml("cache.yaml")
             fc = FrameCache.from_config(config)
         """
-        backend = config.build_backend()
+        from framecache.backend_factory import BackendFactory  # noqa: E402
+
+        backend = BackendFactory.create(config)
         return cls(
             backend,
             framecache_key=config.framecache_key,
